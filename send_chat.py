@@ -76,7 +76,7 @@ def send_google_chat(data):
                                 #
                                 {
                                     "decoratedText": {
-                                        "topLabel": "Screenshot URL",
+                                        "topLabel": "Screenshot URL: COPY & PASTE into browser to view",
                                         "text": f'<a href="{image_url}">{image_url}</a>',
                                     }
                                 },
@@ -98,14 +98,17 @@ def send_google_chat(data):
                                             },
 
                                             {
-                                                "text": "OPEN SCREENSHOT",
-                                                "onClick": {
-                                                    "openLink": {
-                                                        "url": image_url
+                                                "textParagraph": {
+                                                    "text": f'<b>Screenshot:</b><br><a href="{image_url}">Open Screenshot</a>'
+                                                }
+                                            },
+                                            {
+                                                {
+                                                    "textParagraph": {
+                                                        "text": f'<a href="{image_url}">{image_url}</a>'
                                                     }
-                                                },
+                                                }
                                             }
-
                                         ]
                                     }
                                 },

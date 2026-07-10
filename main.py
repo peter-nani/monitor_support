@@ -41,7 +41,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 FORCE_PROCESS_ALL = False
-ENABLE_GOOGLE_CHAT = False
+ENABLE_GOOGLE_CHAT = True
 
 async def extract_latest_activity(page):
 
