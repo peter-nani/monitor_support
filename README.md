@@ -8,3 +8,6 @@ all the .auth profiles and output file can be seen in this path.
 
 
 /home/hr306/DockerSetups/monitor_support/monitor_support
+
+RUN PROCESS EVERY 45 MIN via DOCKER
+/home/hr306/DockerSetups/monitor_support/monitor_support/run_monitor_support.sh &
