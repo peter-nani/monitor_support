@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+
+  monitor_support:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: monitor_support
+
+    working_dir: /root/ocr_extraction/monitor_support
+
+    env_file:
+      - .env
+
+    volumes:
+      # Persistent Playwright authentication
+      - ./.auth:/root/ocr_extraction/monitor_support/.auth
+
+      # Persistent JSON/state/output
+      - ./output:/root/ocr_extraction/monitor_support/output
+      - ./state.json:/root/ocr_extraction/monitor_support/state.json
+
+      # Share screenshots with the host
+      - /tmp:/tmp
+
+    restart: "no"

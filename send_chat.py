@@ -6,7 +6,7 @@ sys.path.insert(0, "/root/ocr_extraction")
 from config import CHAT_WEBHOOK_URL
 
 
-SCREENSHOT_BASE_URL = "http://161.97.176.170:8002/mount_system_temp"
+SCREENSHOT_BASE_URL = "http://192.168.1.148:8002/mount_system_temp/"
 
 
 def send_google_chat(data):
@@ -15,7 +15,7 @@ def send_google_chat(data):
         print("CHAT_WEBHOOK_URL not configured.")
         return
 
-    activity = data["latest_activity"]
+    activity = data.get("latest_activity", {})
 
     image_url = (
         f"{SCREENSHOT_BASE_URL}/{data['ticket']}.png"
@@ -28,8 +28,9 @@ def send_google_chat(data):
                 "card": {
                     "header": {
                         "title": f"Ticket {data['ticket']}",
-                        "subtitle": data["subject"],
+                        "subtitle": data.get("subject", ""),
                     },
+
                     "sections": [
                         {
                             "widgets": [
@@ -37,53 +38,52 @@ def send_google_chat(data):
                                 {
                                     "decoratedText": {
                                         "topLabel": "Last Modified",
-                                        "text": data["last_modified"],
+                                        "text": data.get(
+                                            "last_modified",
+                                            ""
+                                        ),
                                     }
                                 },
 
                                 {
                                     "decoratedText": {
                                         "topLabel": "Author",
-                                        "text": activity["author"],
+                                        "text": activity.get(
+                                            "author",
+                                            ""
+                                        ),
                                     }
                                 },
 
                                 {
                                     "decoratedText": {
                                         "topLabel": "Activity",
-                                        "text": activity["display_time"],
+                                        "text": activity.get(
+                                            "display_time",
+                                            ""
+                                        ),
                                     }
                                 },
 
                                 {
                                     "textParagraph": {
-                                        "text": activity["text"],
+                                        "text": activity.get(
+                                            "text",
+                                            ""
+                                        ),
                                     }
                                 },
 
-                                #
-                                # Screenshot Preview
-                                #
-                                # {
-                                #     "image": {
-                                #         "imageUrl": image_url,
-                                #         "altText": "Ticket Screenshot",
-                                #     }
-                                # },
-
-                                #
-                                # Raw Screenshot URL
-                                #
                                 {
-                                    "decoratedText": {
-                                        "topLabel": "Screenshot URL: COPY & PASTE into browser to view",
-                                        "text": f'<a href="{image_url}">{image_url}</a>',
+                                    "textParagraph": {
+                                        "text": (
+                                            f'<b>Screenshot:</b> '
+                                            f'<a href="{image_url}">'
+                                            f'Open Screenshot</a>'
+                                        ),
                                     }
                                 },
 
-                                #
-                                # Buttons
-                                #
                                 {
                                     "buttonList": {
                                         "buttons": [
@@ -98,17 +98,14 @@ def send_google_chat(data):
                                             },
 
                                             {
-                                                "textParagraph": {
-                                                    "text": f'<b>Screenshot:</b><br><a href="{image_url}">Open Screenshot</a>'
-                                                }
-                                            },
-                                            {
-                                                {
-                                                    "textParagraph": {
-                                                        "text": f'<a href="{image_url}">{image_url}</a>'
+                                                "text": "OPEN SCREENSHOT",
+                                                "onClick": {
+                                                    "openLink": {
+                                                        "url": image_url
                                                     }
-                                                }
-                                            }
+                                                },
+                                            },
+
                                         ]
                                     }
                                 },
@@ -123,7 +120,7 @@ def send_google_chat(data):
 
     try:
 
-        r = requests.post(
+        response = requests.post(
             CHAT_WEBHOOK_URL,
             json=payload,
             timeout=30,
@@ -131,11 +128,11 @@ def send_google_chat(data):
 
         print(
             "Google Chat:",
-            r.status_code,
-            r.text,
+            response.status_code,
+            response.text,
         )
 
-        r.raise_for_status()
+        response.raise_for_status()
 
     except Exception as ex:
 

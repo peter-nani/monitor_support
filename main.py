@@ -40,7 +40,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-FORCE_PROCESS_ALL = False
+FORCE_PROCESS_ALL = True
 ENABLE_GOOGLE_CHAT = True
 
 async def extract_latest_activity(page):
@@ -239,30 +239,75 @@ def save_state(state):
 
 
 async def login_if_required(page, context):
+    """
+    Handle Salesforce authentication using the existing browser session.
 
-    if "login" not in page.url.lower():
-        return
+    If Salesforce shows the "Finish Logging In" page, click the button
+    and wait for Salesforce to complete the login flow.
 
-    logger.info("Logging into Salesforce...")
+    Screenshots are saved to /tmp for visual debugging.
+    """
 
-    username = page.locator("input[id*=username]").first
+    logger.info("Opening Support page...")
+    await page.goto(TARGET_URL, wait_until="domcontentloaded")
 
-    password = page.locator("input[id*=password]").first
+    await page.wait_for_timeout(3000)
 
-    submit = page.locator("button[id*=submit],input[type=submit]").first
+    # Save the current page so we can visually inspect it if necessary.
+    await page.screenshot(
+        path="/tmp/salesforce_login.png",
+        full_page=True
+    )
 
-    await username.fill(USERNAME)
+    # Salesforce sometimes presents an intermediate
+    # "Can't Display Page / Finish Logging In" page.
+    finish_login = page.get_by_text(
+        "Finish Logging In",
+        exact=True
+    )
 
-    await password.fill(PASSWORD)
+    if await finish_login.count():
+        logger.info("Salesforce requires login completion.")
 
-    await submit.click()
+        await finish_login.first.click()
 
-    await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(5000)
 
-    await context.storage_state(path=STORAGE_STATE)
+        await page.screenshot(
+            path="/tmp/salesforce_after_login.png",
+            full_page=True
+        )
 
-    logger.info("Session saved.")
+    # Check whether we are still on a Salesforce login page.
+    if "loginflow" in page.url.lower():
+        logger.info("Salesforce login flow still active.")
 
+        username = page.locator("input[id*=username]").first
+        password = page.locator("input[id*=password]").first
+
+        if await username.count() and await password.count():
+            logger.info("Username/password login form detected.")
+
+            await username.fill(USERNAME)
+            await password.fill(PASSWORD)
+
+            submit = page.locator(
+                "input[type=submit], "
+                "button[type=submit], "
+                "button:has-text('Log In')"
+            ).first
+
+            if await submit.count():
+                await submit.click()
+
+                await page.wait_for_timeout(5000)
+
+                await page.screenshot(
+                    path="/tmp/salesforce_after_credentials.png",
+                    full_page=True
+                )
+
+    logger.info("Salesforce URL: %s", page.url)
 
 # -------------------------------------------------------------------
 # Ticket Discovery
@@ -281,7 +326,7 @@ async def discover_tickets(page):
 
     count = await rows.count()
 
-    logger.info("Found %s tickets", count)
+    logger.info("Found %s table rows", count)
 
     tickets = []
 
@@ -291,19 +336,8 @@ async def discover_tickets(page):
 
         cells = row.locator("td")
 
-        # Debug first row only
-        if i == 0:
-            print("\n===== FIRST ROW =====")
-            for j in range(await cells.count()):
-                print(
-                    j,
-                    (await cells.nth(j).inner_text()).replace("\n", " ")
-                )
-
-        #
         # Find the Case Number link anywhere in the row.
-        #
-        links = row.locator("a.forceOutputLookup")
+        links = row.locator("a")
 
         link_count = await links.count()
 
@@ -315,15 +349,12 @@ async def discover_tickets(page):
 
             text = (await link.inner_text()).strip()
 
-            #
-            # Case numbers are always 8 digits.
-            #
+            # Salesforce case numbers are 8 digits.
             if re.fullmatch(r"\d{8}", text):
                 case_link = link
                 break
 
         if case_link is None:
-            logger.warning("No case link found in row %s", i)
             continue
 
         ticket_number = (await case_link.inner_text()).strip()
@@ -332,12 +363,17 @@ async def discover_tickets(page):
 
         url = urljoin(TARGET_URL, href)
 
-        #
-        # These indexes came from your debug output.
-        #
-        subject = (await cells.nth(1).inner_text()).strip()
+        # These indexes are from the existing Salesforce ticket table.
+        cell_count = await cells.count()
 
-        last_modified = (await cells.nth(8).inner_text()).strip()
+        subject = ""
+        last_modified = ""
+
+        if cell_count > 1:
+            subject = (await cells.nth(1).inner_text()).strip()
+
+        if cell_count > 8:
+            last_modified = (await cells.nth(8).inner_text()).strip()
 
         tickets.append(
             {
@@ -354,6 +390,8 @@ async def discover_tickets(page):
             last_modified,
             subject,
         )
+
+    logger.info("Found %s tickets", len(tickets))
 
     return tickets
 
@@ -591,7 +629,7 @@ async def main():
 
         page = await context.new_page()
 
-        logger.info("Opening Salesforce...")
+        logger.info("Opening Support page...")
 
         await page.goto(TARGET_URL)
         await page.wait_for_load_state("domcontentloaded")
@@ -611,9 +649,31 @@ async def main():
         #
         tickets = await discover_tickets(page)
 
+        logger.info("Saving debug page...")
+
+        await page.screenshot(
+            path="/tmp/monitor_support_debug.png",
+            full_page=True,
+        )
+
+        with open("/tmp/monitor_support_debug.html", "w", encoding="utf-8") as fp:
+            fp.write(await page.content())
+
+        logger.info("table count: %s", await page.locator("table").count())
+        logger.info("tbody count: %s", await page.locator("tbody").count())
+        logger.info("tr count: %s", await page.locator("tr").count())
+        logger.info("a count: %s", await page.locator("a").count())
         #
         # Compare state
         #
+        links = page.locator("a")
+
+        for i in range(await links.count()):
+            text = (await links.nth(i).inner_text()).strip()
+
+            if re.search(r"\d{8}", text):
+                logger.info("POSSIBLE TICKET LINK: %s", text)
+        
         if FORCE_PROCESS_ALL:
             logger.info("DEBUG MODE: Processing all tickets")
             changed = tickets
