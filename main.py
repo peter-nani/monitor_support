@@ -459,31 +459,53 @@ async def login_if_required(page, context):
             full_page=True,
         )
 
-    # ------------------------------------------------------------
-    # Verify authentication
-    # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Wait for Salesforce Lightning login flow to complete
+        # ------------------------------------------------------------
 
-    logger.info(
-        "Salesforce URL after authentication: %s",
-        page.url,
-    )
-
-    current_url = page.url.lower()
-
-    if (
-        "/login" in current_url
-        or "loginflow" in current_url
-    ):
-
-        await page.screenshot(
-            path="/tmp/salesforce_authentication_failed.png",
-            full_page=True,
+        logger.info(
+            "Waiting for Salesforce login flow to complete..."
         )
 
-        raise RuntimeError(
-            "Salesforce authentication failed. "
-            f"Still on login page: {page.url}"
-        )
+        for attempt in range(12):
+
+            await page.wait_for_timeout(2000)
+
+            current_url = page.url.lower()
+
+            logger.info(
+                "Authentication check %d/12 - URL: %s",
+                attempt + 1,
+                page.url,
+            )
+
+            # --------------------------------------------------------
+            # If we have reached the actual Salesforce application,
+            # authentication is complete.
+            # --------------------------------------------------------
+
+            if (
+                "/login" not in current_url
+                and "loginflow" not in current_url
+            ):
+
+                logger.info(
+                    "Salesforce login flow completed."
+                )
+
+                break
+
+        else:
+
+            await page.screenshot(
+                path="/tmp/salesforce_authentication_failed.png",
+                full_page=True,
+            )
+
+            raise RuntimeError(
+                "Salesforce login flow did not complete. "
+                f"Current URL: {page.url}"
+            )
 
     # ------------------------------------------------------------
     # Verify that username/password fields are no longer visible
