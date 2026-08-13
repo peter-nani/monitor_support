@@ -248,6 +248,8 @@ async def login_if_required(page, context):
     - loginflow pages
     - Username/password login
     - Saving a refreshed storage_state
+    - Verifying successful authentication
+    - Re-opening TARGET_URL after authentication
     """
 
     logger.info("Opening Support page...")
@@ -266,26 +268,26 @@ async def login_if_required(page, context):
     )
 
     # ------------------------------------------------------------
-    # Detect login page
+    # Detect whether the current page is a login page
     # ------------------------------------------------------------
 
     async def is_login_page():
 
         url = page.url.lower()
 
+        # URL-based detection
         if "/login" in url or "loginflow" in url:
             return True
 
+        # Visible username/password fields
         username = page.locator(
-            "input[id*='username'], "
-            "input[name*='username'], "
-            "input[type='email']"
+            "input[id*='username']:visible, "
+            "input[name*='username']:visible, "
+            "input[type='email']:visible"
         ).first
 
         password = page.locator(
-            "input[id*='password'], "
-            "input[name*='password'], "
-            "input[type='password']"
+            "input[type='password']:visible"
         ).first
 
         return (
@@ -326,82 +328,108 @@ async def login_if_required(page, context):
         # Username
         # --------------------------------------------------------
 
-        username = page.locator(
-            "input[id*='username'], "
-            "input[name*='username'], "
-            "input[type='email']"
+        username = page.get_by_label(
+            "Username",
+            exact=True,
         ).first
 
-        # Fallback to label
         if await username.count() == 0:
 
-            username = page.get_by_label(
-                "Username",
-                exact=True,
+            username = page.locator(
+                "input[id*='username']:visible, "
+                "input[name*='username']:visible, "
+                "input[type='email']:visible"
             ).first
+
+        if await username.count() == 0:
+
+            raise RuntimeError(
+                "Visible Salesforce username field not found."
+            )
+
+        logger.info(
+            "Visible username field found."
+        )
+
+        await username.fill(USERNAME)
+
+        logger.info(
+            "Username entered."
+        )
 
         # --------------------------------------------------------
         # Password
+        #
+        # IMPORTANT:
+        # Do NOT use input[name*='password'] here.
+        #
+        # Salesforce has a hidden field such as:
+        #
+        # <input type="hidden" name="passwordShown">
+        #
+        # which can otherwise be selected accidentally.
         # --------------------------------------------------------
 
-        password = page.locator(
-            "input[id*='password'], "
-            "input[name*='password'], "
-            "input[type='password']"
+        password = page.get_by_label(
+            "Password",
+            exact=True,
         ).first
 
-        # Fallback to label
         if await password.count() == 0:
 
-            password = page.get_by_label(
-                "Password",
-                exact=True,
+            password = page.locator(
+                "input[type='password']:visible"
             ).first
 
-        if not await username.count():
+        if await password.count() == 0:
+
             raise RuntimeError(
-                "Salesforce username field not found."
+                "Visible Salesforce password field not found."
             )
 
-        if not await password.count():
-            raise RuntimeError(
-                "Salesforce password field not found."
-            )
+        logger.info(
+            "Visible password field found."
+        )
 
-        logger.info("Username/password fields found.")
-
-        await username.fill(USERNAME)
         await password.fill(PASSWORD)
 
-        logger.info("Credentials entered.")
+        logger.info(
+            "Password entered."
+        )
 
         # --------------------------------------------------------
         # Login button
         # --------------------------------------------------------
 
         submit = page.locator(
-            "button[type='submit'], "
-            "input[type='submit'], "
-            "button:has-text('Log In')"
+            "button[type='submit']:visible, "
+            "input[type='submit']:visible"
         ).first
 
         if await submit.count() == 0:
 
             submit = page.get_by_role(
                 "button",
-                name=re.compile(r"log\s*in", re.I),
+                name=re.compile(
+                    r"log\s*in",
+                    re.I,
+                ),
             ).first
 
         if await submit.count() == 0:
 
             raise RuntimeError(
-                "Salesforce Log In button not found."
+                "Visible Salesforce Log In button not found."
             )
+
+        logger.info(
+            "Clicking Salesforce Log In."
+        )
 
         await submit.click()
 
         logger.info(
-            "Clicked Salesforce Log In."
+            "Salesforce Log In clicked."
         )
 
         # --------------------------------------------------------
@@ -417,8 +445,13 @@ async def login_if_required(page, context):
 
         except Exception:
 
-            pass
+            # Some Salesforce pages update without a conventional
+            # navigation event.
+            logger.info(
+                "No conventional page navigation detected."
+            )
 
+        # Give Salesforce/Lightning time to finish rendering.
         await page.wait_for_timeout(5000)
 
         await page.screenshot(
@@ -435,7 +468,12 @@ async def login_if_required(page, context):
         page.url,
     )
 
-    if "/login" in page.url.lower() or "loginflow" in page.url.lower():
+    current_url = page.url.lower()
+
+    if (
+        "/login" in current_url
+        or "loginflow" in current_url
+    ):
 
         await page.screenshot(
             path="/tmp/salesforce_authentication_failed.png",
@@ -445,6 +483,21 @@ async def login_if_required(page, context):
         raise RuntimeError(
             "Salesforce authentication failed. "
             f"Still on login page: {page.url}"
+        )
+
+    # ------------------------------------------------------------
+    # Verify that username/password fields are no longer visible
+    # ------------------------------------------------------------
+
+    visible_password = page.locator(
+        "input[type='password']:visible"
+    ).first
+
+    if await visible_password.count() > 0:
+
+        logger.warning(
+            "A visible password field is still present "
+            "after login."
         )
 
     # ------------------------------------------------------------
@@ -461,8 +514,10 @@ async def login_if_required(page, context):
     )
 
     # ------------------------------------------------------------
-    # Navigate explicitly to the target case page again.
-    # This is important after login.
+    # Re-open TARGET_URL after authentication.
+    #
+    # This is important because the login flow may leave us on
+    # an intermediate Salesforce page.
     # ------------------------------------------------------------
 
     logger.info(
@@ -475,6 +530,7 @@ async def login_if_required(page, context):
         timeout=60000,
     )
 
+    # Salesforce Lightning needs additional time to render.
     await page.wait_for_timeout(5000)
 
     logger.info(
@@ -482,12 +538,35 @@ async def login_if_required(page, context):
         page.url,
     )
 
-    if "/login" in page.url.lower():
+    # ------------------------------------------------------------
+    # Final authentication check
+    # ------------------------------------------------------------
+
+    final_url = page.url.lower()
+
+    if (
+        "/login" in final_url
+        or "loginflow" in final_url
+    ):
+
+        await page.screenshot(
+            path="/tmp/salesforce_authentication_failed_final.png",
+            full_page=True,
+        )
 
         raise RuntimeError(
-            "Salesforce redirected back to login after "
-            "successful authentication."
+            "Salesforce redirected back to the login page "
+            "after authentication. "
+            f"Final URL: {page.url}"
         )
+
+    logger.info(
+        "Salesforce authentication verified successfully."
+    )
+
+    logger.info(
+        "Ready for ticket discovery."
+    )
 
 # -------------------------------------------------------------------
 # Ticket Discovery
