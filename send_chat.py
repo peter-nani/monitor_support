@@ -80,9 +80,8 @@ def send_google_chat(data):
                                 {
                                     "textParagraph": {
                                         "text": (
-                                            f'<b>Screenshot:</b> '
-                                            f'<a href="{image_url}">'
-                                            f'Open Screenshot</a>'
+                                            f"<b>Screenshot URL:</b> "
+                                            f"{image_url}"
                                         ),
                                     }
                                 },
