@@ -13,4 +13,4 @@ RUN mkdir -p \
     /root/ocr_extraction/monitor_support/.auth \
     /root/ocr_extraction/monitor_support/output/json
 
-CMD ["python", "main.py"]
+CMD ["tail", "-f", "/dev/null"]

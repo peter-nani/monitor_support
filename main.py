@@ -40,7 +40,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-FORCE_PROCESS_ALL = True
+FORCE_PROCESS_ALL = False
 ENABLE_GOOGLE_CHAT = True
 
 async def extract_latest_activity(page):
@@ -450,24 +450,27 @@ async def process_ticket(browser, context, ticket, state):
 
     page = await context.new_page()
 
+    case_number = ticket["ticket"]
+
     try:
 
         logger.info("Opening ticket...")
 
         await page.goto(
             ticket["url"],
-            wait_until="domcontentloaded"
+            wait_until="domcontentloaded",
+            timeout=60000,
         )
 
         await page.wait_for_selector(
             "body",
-            timeout=20000,
+            timeout=30000,
         )
 
         await page.wait_for_timeout(5000)
 
         #
-        # Small scroll to trigger lazy rendering
+        # Trigger lazy rendering
         #
         await page.evaluate("""
             window.scrollTo(
@@ -479,28 +482,16 @@ async def process_ticket(browser, context, ticket, state):
         await page.wait_for_timeout(1000)
 
         #
-        # Basic ticket information
-        #
-        case_number = ticket["ticket"]
-        subject = ticket["subject"]
-
-        #
-        # Extract newest activity
+        # Extract ticket information
         #
         latest_activity = await extract_latest_activity(page)
-
-        #
-        # Save HTML for debugging (optional)
-        #
-        with open("/tmp/page.html", "w", encoding="utf-8") as fp:
-            fp.write(await page.content())
 
         #
         # Screenshot
         #
         screenshot = os.path.join(
             SCREENSHOT_DIR,
-            f"{case_number}.png"
+            f"{case_number}.png",
         )
 
         await page.screenshot(
@@ -508,76 +499,193 @@ async def process_ticket(browser, context, ticket, state):
             full_page=True,
         )
 
-        logger.info("Screenshot saved.")
+        logger.info(
+            "Screenshot saved: %s",
+            screenshot,
+        )
 
         #
-        # JSON
+        # Build JSON data
         #
         data = {
-
             "ticket": case_number,
-
-            "subject": subject,
-
+            "subject": ticket["subject"],
             "url": ticket["url"],
-
             "last_modified": ticket["last_modified"],
-
             "captured_at": datetime.now().isoformat(),
-
             "latest_activity": latest_activity,
-
             "screenshot": screenshot,
-
         }
 
+        #
+        # Validate that the Python object can be
+        # serialized as JSON before writing it.
+        #
+        try:
+
+            json_string = json.dumps(
+                data,
+                indent=4,
+                ensure_ascii=False,
+            )
+
+        except (TypeError, ValueError) as ex:
+
+            logger.exception(
+                "JSON serialization failed for %s",
+                case_number,
+            )
+
+            if ENABLE_GOOGLE_CHAT:
+                send_google_chat_error(
+                    case_number,
+                    "JSON serialization failed",
+                    str(ex),
+                )
+
+            return False
+
+        #
+        # Write JSON
+        #
         json_file = os.path.join(
             JSON_DIR,
-            f"{case_number}.json"
+            f"{case_number}.json",
         )
 
         with open(
             json_file,
             "w",
-            encoding="utf-8"
+            encoding="utf-8",
         ) as fp:
 
-            json.dump(
-                data,
-                fp,
-                indent=4,
-                ensure_ascii=False,
+            fp.write(json_string)
+
+        #
+        # Read it back and validate the actual file.
+        #
+        try:
+
+            with open(
+                json_file,
+                "r",
+                encoding="utf-8",
+            ) as fp:
+
+                validated_data = json.load(fp)
+
+        except (OSError, json.JSONDecodeError) as ex:
+
+            logger.exception(
+                "JSON validation failed for %s",
+                case_number,
             )
 
-        logger.info("JSON saved.")
+            if ENABLE_GOOGLE_CHAT:
+                send_google_chat_error(
+                    case_number,
+                    "JSON file validation failed",
+                    str(ex),
+                )
+
+            return False
 
         #
-        # Update state
+        # Make sure the JSON is actually an object.
         #
-        state[case_number] = ticket["last_modified"]
+        if not isinstance(validated_data, dict):
+
+            error = "JSON root is not an object."
+
+            logger.error(
+                "%s Ticket: %s",
+                error,
+                case_number,
+            )
+
+            if ENABLE_GOOGLE_CHAT:
+                send_google_chat_error(
+                    case_number,
+                    "Invalid JSON structure",
+                    error,
+                )
+
+            return False
+
+        logger.info(
+            "Valid JSON saved: %s",
+            json_file,
+        )
+
+        #
+        # Send Google Chat only after JSON is confirmed valid.
+        #
         if ENABLE_GOOGLE_CHAT:
 
             try:
 
-                send_google_chat(data)
+                send_google_chat(validated_data)
 
-                logger.info("Google Chat notification sent.")
+                logger.info(
+                    "Google Chat notification sent."
+                )
 
-            except Exception:
+            except Exception as ex:
 
-                logger.exception("Google Chat notification failed.")
+                logger.exception(
+                    "Google Chat notification failed."
+                )
 
-        logger.info("Completed %s", case_number)
+                #
+                # IMPORTANT:
+                # The JSON is still valid, so we don't
+                # delete it. But we DO notify about
+                # the notification failure.
+                #
+                try:
+
+                    send_google_chat_error(
+                        case_number,
+                        "Google Chat notification failed",
+                        str(ex),
+                    )
+
+                except Exception:
+
+                    logger.exception(
+                        "Failed to send Google Chat error notification."
+                    )
+
+                return False
+
+        #
+        # Only mark the ticket processed after
+        # JSON + notification succeeded.
+        #
+        state[case_number] = ticket["last_modified"]
+
+        logger.info(
+            "Completed %s successfully.",
+            case_number,
+        )
+
+        return True
 
     except Exception as ex:
 
-        logger.exception(ex)
+        logger.exception(
+            "Failed processing ticket %s",
+            case_number,
+        )
 
+        #
+        # Failed screenshot for debugging.
+        #
         try:
 
             failed = os.path.join(
                 SCREENSHOT_DIR,
-                f"{ticket['ticket']}_FAILED.png"
+                f"{case_number}_FAILED.png",
             )
 
             await page.screenshot(
@@ -586,7 +694,29 @@ async def process_ticket(browser, context, ticket, state):
             )
 
         except Exception:
+
             pass
+
+        #
+        # Immediately notify.
+        #
+        if ENABLE_GOOGLE_CHAT:
+
+            try:
+
+                send_google_chat_error(
+                    case_number,
+                    "Ticket processing failed",
+                    str(ex),
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "Failed to send error notification."
+                )
+
+        return False
 
     finally:
 
