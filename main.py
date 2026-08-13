@@ -240,74 +240,254 @@ def save_state(state):
 
 async def login_if_required(page, context):
     """
-    Handle Salesforce authentication using the existing browser session.
+    Ensure that the Salesforce session is authenticated.
 
-    If Salesforce shows the "Finish Logging In" page, click the button
-    and wait for Salesforce to complete the login flow.
-
-    Screenshots are saved to /tmp for visual debugging.
+    Handles:
+    - Existing valid storage_state
+    - Normal Salesforce /login page
+    - loginflow pages
+    - Username/password login
+    - Saving a refreshed storage_state
     """
 
     logger.info("Opening Support page...")
-    await page.goto(TARGET_URL, wait_until="domcontentloaded")
+
+    await page.goto(
+        TARGET_URL,
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
 
     await page.wait_for_timeout(3000)
 
-    # Save the current page so we can visually inspect it if necessary.
     await page.screenshot(
         path="/tmp/salesforce_login.png",
-        full_page=True
+        full_page=True,
     )
 
-    # Salesforce sometimes presents an intermediate
-    # "Can't Display Page / Finish Logging In" page.
+    # ------------------------------------------------------------
+    # Detect login page
+    # ------------------------------------------------------------
+
+    async def is_login_page():
+
+        url = page.url.lower()
+
+        if "/login" in url or "loginflow" in url:
+            return True
+
+        username = page.locator(
+            "input[id*='username'], "
+            "input[name*='username'], "
+            "input[type='email']"
+        ).first
+
+        password = page.locator(
+            "input[id*='password'], "
+            "input[name*='password'], "
+            "input[type='password']"
+        ).first
+
+        return (
+            await username.count() > 0
+            and await password.count() > 0
+        )
+
+    # ------------------------------------------------------------
+    # Handle "Finish Logging In"
+    # ------------------------------------------------------------
+
     finish_login = page.get_by_text(
         "Finish Logging In",
-        exact=True
+        exact=True,
     )
 
     if await finish_login.count():
-        logger.info("Salesforce requires login completion.")
+
+        logger.info(
+            "Salesforce requires login completion."
+        )
 
         await finish_login.first.click()
 
         await page.wait_for_timeout(5000)
 
-        await page.screenshot(
-            path="/tmp/salesforce_after_login.png",
-            full_page=True
+    # ------------------------------------------------------------
+    # Detect normal username/password login
+    # ------------------------------------------------------------
+
+    if await is_login_page():
+
+        logger.info(
+            "Salesforce username/password login page detected."
         )
 
-    # Check whether we are still on a Salesforce login page.
-    if "loginflow" in page.url.lower():
-        logger.info("Salesforce login flow still active.")
+        # --------------------------------------------------------
+        # Username
+        # --------------------------------------------------------
 
-        username = page.locator("input[id*=username]").first
-        password = page.locator("input[id*=password]").first
+        username = page.locator(
+            "input[id*='username'], "
+            "input[name*='username'], "
+            "input[type='email']"
+        ).first
 
-        if await username.count() and await password.count():
-            logger.info("Username/password login form detected.")
+        # Fallback to label
+        if await username.count() == 0:
 
-            await username.fill(USERNAME)
-            await password.fill(PASSWORD)
-
-            submit = page.locator(
-                "input[type=submit], "
-                "button[type=submit], "
-                "button:has-text('Log In')"
+            username = page.get_by_label(
+                "Username",
+                exact=True,
             ).first
 
-            if await submit.count():
-                await submit.click()
+        # --------------------------------------------------------
+        # Password
+        # --------------------------------------------------------
 
-                await page.wait_for_timeout(5000)
+        password = page.locator(
+            "input[id*='password'], "
+            "input[name*='password'], "
+            "input[type='password']"
+        ).first
 
-                await page.screenshot(
-                    path="/tmp/salesforce_after_credentials.png",
-                    full_page=True
-                )
+        # Fallback to label
+        if await password.count() == 0:
 
-    logger.info("Salesforce URL: %s", page.url)
+            password = page.get_by_label(
+                "Password",
+                exact=True,
+            ).first
+
+        if not await username.count():
+            raise RuntimeError(
+                "Salesforce username field not found."
+            )
+
+        if not await password.count():
+            raise RuntimeError(
+                "Salesforce password field not found."
+            )
+
+        logger.info("Username/password fields found.")
+
+        await username.fill(USERNAME)
+        await password.fill(PASSWORD)
+
+        logger.info("Credentials entered.")
+
+        # --------------------------------------------------------
+        # Login button
+        # --------------------------------------------------------
+
+        submit = page.locator(
+            "button[type='submit'], "
+            "input[type='submit'], "
+            "button:has-text('Log In')"
+        ).first
+
+        if await submit.count() == 0:
+
+            submit = page.get_by_role(
+                "button",
+                name=re.compile(r"log\s*in", re.I),
+            ).first
+
+        if await submit.count() == 0:
+
+            raise RuntimeError(
+                "Salesforce Log In button not found."
+            )
+
+        await submit.click()
+
+        logger.info(
+            "Clicked Salesforce Log In."
+        )
+
+        # --------------------------------------------------------
+        # Wait for navigation after login
+        # --------------------------------------------------------
+
+        try:
+
+            await page.wait_for_load_state(
+                "domcontentloaded",
+                timeout=30000,
+            )
+
+        except Exception:
+
+            pass
+
+        await page.wait_for_timeout(5000)
+
+        await page.screenshot(
+            path="/tmp/salesforce_after_credentials.png",
+            full_page=True,
+        )
+
+    # ------------------------------------------------------------
+    # Verify authentication
+    # ------------------------------------------------------------
+
+    logger.info(
+        "Salesforce URL after authentication: %s",
+        page.url,
+    )
+
+    if "/login" in page.url.lower() or "loginflow" in page.url.lower():
+
+        await page.screenshot(
+            path="/tmp/salesforce_authentication_failed.png",
+            full_page=True,
+        )
+
+        raise RuntimeError(
+            "Salesforce authentication failed. "
+            f"Still on login page: {page.url}"
+        )
+
+    # ------------------------------------------------------------
+    # Save refreshed authenticated session
+    # ------------------------------------------------------------
+
+    await context.storage_state(
+        path=STORAGE_STATE
+    )
+
+    logger.info(
+        "Authenticated Salesforce session saved: %s",
+        STORAGE_STATE,
+    )
+
+    # ------------------------------------------------------------
+    # Navigate explicitly to the target case page again.
+    # This is important after login.
+    # ------------------------------------------------------------
+
+    logger.info(
+        "Opening Salesforce target page after authentication..."
+    )
+
+    await page.goto(
+        TARGET_URL,
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
+
+    await page.wait_for_timeout(5000)
+
+    logger.info(
+        "Final Salesforce URL: %s",
+        page.url,
+    )
+
+    if "/login" in page.url.lower():
+
+        raise RuntimeError(
+            "Salesforce redirected back to login after "
+            "successful authentication."
+        )
 
 # -------------------------------------------------------------------
 # Ticket Discovery
@@ -320,78 +500,301 @@ import re
 
 async def discover_tickets(page):
 
-    logger.info("Reading ticket table...")
+    logger.info("Reading Salesforce ticket table...")
+
+    # ------------------------------------------------------------
+    # Give Salesforce Lightning time to render.
+    # ------------------------------------------------------------
+
+    logger.info("Waiting for Salesforce ticket data...")
+
+    ticket_selectors = [
+        "table tbody tr",
+        "table tr",
+        "lightning-datatable",
+        "[role='grid']",
+        "[role='row']",
+        "a[href*='/case/Case/']",
+    ]
+
+    found_selector = None
+
+    for selector in ticket_selectors:
+
+        try:
+
+            await page.locator(selector).first.wait_for(
+                state="visible",
+                timeout=10000,
+            )
+
+            found_selector = selector
+
+            logger.info(
+                "Salesforce content detected using selector: %s",
+                selector,
+            )
+
+            break
+
+        except Exception:
+
+            continue
+
+    if found_selector is None:
+
+        logger.error(
+            "No Salesforce ticket content became visible."
+        )
+
+        logger.error(
+            "Current URL: %s",
+            page.url,
+        )
+
+        # Debug information
+        logger.info(
+            "table count: %s",
+            await page.locator("table").count(),
+        )
+
+        logger.info(
+            "tbody count: %s",
+            await page.locator("tbody").count(),
+        )
+
+        logger.info(
+            "tr count: %s",
+            await page.locator("tr").count(),
+        )
+
+        logger.info(
+            "role=row count: %s",
+            await page.locator("[role='row']").count(),
+        )
+
+        logger.info(
+            "lightning-datatable count: %s",
+            await page.locator("lightning-datatable").count(),
+        )
+
+        logger.info(
+            "case links: %s",
+            await page.locator(
+                "a[href*='/case/Case/']"
+            ).count(),
+        )
+
+        raise RuntimeError(
+            "Salesforce ticket table/data did not render."
+        )
+
+    # ------------------------------------------------------------
+    # First try normal table rows.
+    # ------------------------------------------------------------
 
     rows = page.locator("table tbody tr")
 
     count = await rows.count()
 
-    logger.info("Found %s table rows", count)
+    logger.info(
+        "Found %s standard table rows.",
+        count,
+    )
 
     tickets = []
 
-    for i in range(count):
+    # ------------------------------------------------------------
+    # Parse standard Salesforce table.
+    # ------------------------------------------------------------
 
-        row = rows.nth(i)
+    if count > 0:
 
-        cells = row.locator("td")
+        for i in range(count):
 
-        # Find the Case Number link anywhere in the row.
-        links = row.locator("a")
+            row = rows.nth(i)
 
-        link_count = await links.count()
+            cells = row.locator("td")
 
-        case_link = None
+            links = row.locator("a")
 
-        for j in range(link_count):
+            link_count = await links.count()
 
-            link = links.nth(j)
+            case_link = None
 
-            text = (await link.inner_text()).strip()
+            for j in range(link_count):
 
-            # Salesforce case numbers are 8 digits.
-            if re.fullmatch(r"\d{8}", text):
-                case_link = link
-                break
+                link = links.nth(j)
 
-        if case_link is None:
-            continue
+                text = (
+                    await link.inner_text()
+                ).strip()
 
-        ticket_number = (await case_link.inner_text()).strip()
+                if re.fullmatch(
+                    r"\d{8}",
+                    text,
+                ):
 
-        href = await case_link.get_attribute("href")
+                    case_link = link
+                    break
 
-        url = urljoin(TARGET_URL, href)
+            if case_link is None:
+                continue
 
-        # These indexes are from the existing Salesforce ticket table.
-        cell_count = await cells.count()
+            ticket_number = (
+                await case_link.inner_text()
+            ).strip()
 
-        subject = ""
-        last_modified = ""
+            href = await case_link.get_attribute(
+                "href"
+            )
 
-        if cell_count > 1:
-            subject = (await cells.nth(1).inner_text()).strip()
+            if not href:
+                continue
 
-        if cell_count > 8:
-            last_modified = (await cells.nth(8).inner_text()).strip()
+            url = urljoin(
+                TARGET_URL,
+                href,
+            )
 
-        tickets.append(
-            {
-                "ticket": ticket_number,
-                "subject": subject,
-                "url": url,
-                "last_modified": last_modified,
-            }
+            cell_count = await cells.count()
+
+            subject = ""
+            last_modified = ""
+
+            if cell_count > 1:
+
+                subject = (
+                    await cells.nth(1).inner_text()
+                ).strip()
+
+            if cell_count > 8:
+
+                last_modified = (
+                    await cells.nth(8).inner_text()
+                ).strip()
+
+            tickets.append(
+                {
+                    "ticket": ticket_number,
+                    "subject": subject,
+                    "url": url,
+                    "last_modified": last_modified,
+                }
+            )
+
+    # ------------------------------------------------------------
+    # Fallback: search all case links on the page.
+    # ------------------------------------------------------------
+
+    if not tickets:
+
+        logger.info(
+            "No tickets found from table rows."
         )
 
         logger.info(
-            "%s | %s | %s",
-            ticket_number,
-            last_modified,
-            subject,
+            "Trying Salesforce case links..."
         )
 
-    logger.info("Found %s tickets", len(tickets))
+        links = page.locator(
+            "a[href*='/case/Case/']"
+        )
+
+        link_count = await links.count()
+
+        logger.info(
+            "Found %s Salesforce case links.",
+            link_count,
+        )
+
+        seen = set()
+
+        for i in range(link_count):
+
+            link = links.nth(i)
+
+            text = (
+                await link.inner_text()
+            ).strip()
+
+            href = await link.get_attribute(
+                "href"
+            )
+
+            if not href:
+                continue
+
+            # ----------------------------------------------------
+            # Extract case number.
+            # ----------------------------------------------------
+
+            match = re.search(
+                r"\b(\d{8})\b",
+                text,
+            )
+
+            if not match:
+
+                match = re.search(
+                    r"\b(\d{8})\b",
+                    href,
+                )
+
+            if not match:
+                continue
+
+            ticket_number = match.group(1)
+
+            if ticket_number in seen:
+                continue
+
+            seen.add(ticket_number)
+
+            url = urljoin(
+                TARGET_URL,
+                href,
+            )
+
+            # ----------------------------------------------------
+            # Try to determine subject from nearby text.
+            # ----------------------------------------------------
+
+            subject = ""
+
+            try:
+
+                parent_text = (
+                    await link.locator(
+                        "xpath=.."
+                    ).inner_text()
+                ).strip()
+
+                subject = parent_text
+
+            except Exception:
+
+                pass
+
+            tickets.append(
+                {
+                    "ticket": ticket_number,
+                    "subject": subject,
+                    "url": url,
+                    "last_modified": "",
+                }
+            )
+
+            logger.info(
+                "CASE LINK: %s | %s",
+                ticket_number,
+                url,
+            )
+
+    logger.info(
+        "Found %s tickets",
+        len(tickets),
+    )
 
     return tickets
 
@@ -740,12 +1143,15 @@ async def main():
             ],
         )
 
-        #
-        # Reuse previous login session
-        #
+        # --------------------------------------------------------
+        # Browser context
+        # --------------------------------------------------------
+
         if os.path.exists(STORAGE_STATE):
 
-            logger.info("Loading saved session...")
+            logger.info(
+                "Loading saved session..."
+            )
 
             context = await browser.new_context(
                 storage_state=STORAGE_STATE
@@ -753,71 +1159,128 @@ async def main():
 
         else:
 
-            logger.info("Creating new browser session...")
+            logger.info(
+                "Creating new browser session..."
+            )
 
             context = await browser.new_context()
 
         page = await context.new_page()
 
-        logger.info("Opening Support page...")
+        # --------------------------------------------------------
+        # Authentication + target page
+        # --------------------------------------------------------
 
-        await page.goto(TARGET_URL)
-        await page.wait_for_load_state("domcontentloaded")
+        await login_if_required(
+            page,
+            context,
+        )
 
-        #
-        # Login if needed
-        #
-        await login_if_required(page, context)
+        # --------------------------------------------------------
+        # Salesforce diagnostics
+        # --------------------------------------------------------
 
-        #
-        # Give Lightning a chance to render
-        #
-        await page.wait_for_timeout(5000)
+        logger.info("=" * 80)
+        logger.info("SALESFORCE PAGE DIAGNOSTICS")
+        logger.info(
+            "URL: %s",
+            page.url,
+        )
+        logger.info(
+            "Title: %s",
+            await page.title(),
+        )
+        logger.info(
+            "Tables: %s",
+            await page.locator("table").count(),
+        )
+        logger.info(
+            "Rows: %s",
+            await page.locator("tr").count(),
+        )
+        logger.info(
+            "Grid rows: %s",
+            await page.locator(
+                "[role='row']"
+            ).count(),
+        )
+        logger.info(
+            "Lightning datatables: %s",
+            await page.locator(
+                "lightning-datatable"
+            ).count(),
+        )
+        logger.info(
+            "Case links: %s",
+            await page.locator(
+                "a[href*='/case/Case/']"
+            ).count(),
+        )
+        logger.info("=" * 80)
 
-        #
-        # Read ticket list
-        #
-        tickets = await discover_tickets(page)
+        # --------------------------------------------------------
+        # Discover tickets
+        # --------------------------------------------------------
 
-        logger.info("Saving debug page...")
+        tickets = await discover_tickets(
+            page
+        )
+
+        # --------------------------------------------------------
+        # Debug artifacts
+        # --------------------------------------------------------
+
+        logger.info(
+            "Saving debug page..."
+        )
 
         await page.screenshot(
             path="/tmp/monitor_support_debug.png",
             full_page=True,
         )
 
-        with open("/tmp/monitor_support_debug.html", "w", encoding="utf-8") as fp:
-            fp.write(await page.content())
+        with open(
+            "/tmp/monitor_support_debug.html",
+            "w",
+            encoding="utf-8",
+        ) as fp:
 
-        logger.info("table count: %s", await page.locator("table").count())
-        logger.info("tbody count: %s", await page.locator("tbody").count())
-        logger.info("tr count: %s", await page.locator("tr").count())
-        logger.info("a count: %s", await page.locator("a").count())
-        #
+            fp.write(
+                await page.content()
+            )
+
+        # --------------------------------------------------------
         # Compare state
-        #
-        links = page.locator("a")
+        # --------------------------------------------------------
 
-        for i in range(await links.count()):
-            text = (await links.nth(i).inner_text()).strip()
-
-            if re.search(r"\d{8}", text):
-                logger.info("POSSIBLE TICKET LINK: %s", text)
-        
         if FORCE_PROCESS_ALL:
-            logger.info("DEBUG MODE: Processing all tickets")
+
+            logger.info(
+                "DEBUG MODE: Processing all tickets"
+            )
+
             changed = tickets
+
         else:
+
             changed = changed_tickets(
                 tickets,
                 state,
             )
 
+        # --------------------------------------------------------
+        # No changes
+        # --------------------------------------------------------
+
         if not changed:
 
             logger.info("=" * 80)
-            logger.info("No ticket updates.")
-            logger.info("Exiting.")
+            logger.info(
+                "No ticket updates."
+            )
+            logger.info(
+                "Exiting."
+            )
             logger.info("=" * 80)
 
             save_state(state)
@@ -826,6 +1289,10 @@ async def main():
 
             return
 
+        # --------------------------------------------------------
+        # Process changed tickets
+        # --------------------------------------------------------
+
         logger.info("=" * 80)
         logger.info(
             "%s ticket(s) require processing.",
@@ -833,30 +1300,15 @@ async def main():
         )
         logger.info("=" * 80)
 
-        #
-        # Process changed tickets
-        #
         for ticket in changed:
 
-            try:
+            await process_ticket(
+                browser,
+                context,
+                ticket,
+                state,
+            )
 
-                await process_ticket(
-                    browser,
-                    context,
-                    ticket,
-                    state,
-                )
-
-            except Exception:
-
-                logger.exception(
-                    "Failed processing %s",
-                    ticket["ticket"],
-                )
-
-        #
-        # Persist state
-        #
         save_state(state)
 
         logger.info("=" * 80)
@@ -864,7 +1316,6 @@ async def main():
         logger.info("=" * 80)
 
         await browser.close()
-
 
 # -------------------------------------------------------------------
 # Entry Point
