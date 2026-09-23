@@ -1,16 +1,16 @@
 import asyncio
 import json
 import logging
-import os
-import sys
-import time
-from datetime import datetime
-from urllib.parse import urljoin
 import hashlib
+import os
 import re
+import sys
 from datetime import datetime, timedelta
+from urllib.parse import urljoin
 
 from playwright.async_api import async_playwright
+
+from send_chat import send_google_chat, send_google_chat_error
 
 CONFIG_DIR = os.getenv("SL1_CONFIG_DIR", "/root/ocr_extraction")
 if CONFIG_DIR not in sys.path:
@@ -27,7 +27,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Keep the authentication/session files outside the repository by default,
 # while allowing the deployment to override the location explicitly.
 DEFAULT_PROFILE_DIR = os.path.join(BASE_DIR, ".auth")
-PROFILE_DIR = os.getenv("PROFILE_DIR", DEFAULT_PROFILE_DIR)#/root/ocr_extraction/monitor_support/.auth
+PROFILE_DIR = os.getenv("PROFILE_DIR", DEFAULT_PROFILE_DIR)
 STORAGE_STATE = os.path.join(PROFILE_DIR, "storage_state.json")
 
 STATE_FILE = os.getenv(
@@ -49,10 +49,7 @@ os.makedirs(JSON_DIR, exist_ok=True)
 
 DEBUG_MODE = os.getenv("DEBUG_MODE", "0").lower() in {"1", "true", "yes", "on"}
 FORCE_PROCESS_ALL = os.getenv("FORCE_PROCESS_ALL", "0").lower() in {"1", "true", "yes", "on"}
-# Google Chat notifications are intentionally disabled for this monitor.
-# Debug runs must never send Chat messages, and the monitor currently does
-# not send Chat messages in normal runs either.
-ENABLE_GOOGLE_CHAT = False
+ENABLE_GOOGLE_CHAT = os.getenv("ENABLE_GOOGLE_CHAT", "1").lower() not in {"0", "false", "no", "off"}
 HEADLESS = os.getenv("HEADLESS", "1").lower() not in {"0", "false", "no", "off"}
 
 # Salesforce Lightning can continue rendering after DOMContentLoaded.
@@ -74,6 +71,20 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _notify_chat_error(ticket, error_type, error_message):
+    """Send an error notification during normal runs, never in debug mode."""
+    if DEBUG_MODE or not ENABLE_GOOGLE_CHAT:
+        return
+
+    try:
+        send_google_chat_error(ticket, error_type, error_message)
+    except Exception:
+        logger.exception(
+            "Failed to send Google Chat error notification for %s.",
+            ticket,
+        )
 
 def _clean_text(value):
     """Normalize rendered Salesforce text without changing its content."""
@@ -1258,27 +1269,14 @@ async def extract_latest_activity(page, case_number=None):
 
     comments = activity.get("comments", [])
 
-    # The requested activity is:
-    #   - the top-level post if it has no comments
-    #   - otherwise the newest rendered comment belonging to that post.
-    #
-    # We do not compare against comments from any other feed item.
-    latest_comment = activity.get("latest_comment")
-
-    if latest_comment:
-        result = dict(activity)
-        result["type"] = "comment"
-        result["author"] = latest_comment.get("author", "")
-        result["display_time"] = latest_comment.get("display_time", "")
-        result["estimated_time"] = latest_comment.get("estimated_time")
-        result["text"] = latest_comment.get("text", "")
-        result["selected_from_article"] = 0
-        result["selected_activity_is_comment"] = True
-    else:
-        result = dict(activity)
-        result["type"] = "post"
-        result["selected_from_article"] = 0
-        result["selected_activity_is_comment"] = False
+    # Always preserve the original/top-most post as the primary activity.
+    # Comments belong to that post and are retained separately in
+    # ``latest_comment``. This prevents a newer comment from replacing the
+    # actual Salesforce activity shown under "Latest Activity".
+    result = dict(activity)
+    result["type"] = "post"
+    result["selected_from_article"] = 0
+    result["selected_activity_is_comment"] = False
 
     await _debug_ticket_dom(
         page,
@@ -1298,9 +1296,6 @@ async def extract_latest_activity(page, case_number=None):
 
     return result
 
-# -------------------------------------------------------------------
-# State
-# -------------------------------------------------------------------
 # -------------------------------------------------------------------
 # State
 # -------------------------------------------------------------------
@@ -1335,16 +1330,36 @@ def make_activity_id(author, text, activity_type="post", estimated_time=None):
 
 
 def make_activity_fingerprint(activity):
-    """Return the deduplication fingerprint for a selected activity."""
+    """Return a stable fingerprint for the top post plus its newest comment.
+
+    The top post remains the selected/displayed activity, while a newly added
+    comment must still produce a new fingerprint so the monitor can notify
+    about that comment. Relative display times are deliberately excluded.
+    """
     if not isinstance(activity, dict):
         return ""
 
-    return make_activity_id(
+    primary_id = make_activity_id(
         activity.get("author"),
         activity.get("text"),
-        activity.get("type", "post"),
+        "post",
         activity.get("estimated_time"),
     )
+
+    latest_comment = activity.get("latest_comment")
+    if not isinstance(latest_comment, dict):
+        return primary_id
+
+    comment_id = make_activity_id(
+        latest_comment.get("author"),
+        latest_comment.get("text"),
+        "comment",
+        latest_comment.get("estimated_time"),
+    )
+
+    return hashlib.sha1(
+        f"{primary_id}|{comment_id}".encode("utf-8")
+    ).hexdigest()
 
 
 def estimate_time(display_time):
@@ -2324,21 +2339,41 @@ async def process_ticket(browser, context, ticket, state):
             json_file,
         )
 
-        # Google Chat is intentionally not sent. In particular, DEBUG_MODE
-        # must never produce a Chat notification. The monitor only records
-        # local JSON/screenshots/logs.
+        # Debug runs are intentionally silent. In normal runs, notify only
+        # when the selected Chatter activity is genuinely new.
         if DEBUG_MODE:
             logger.info(
                 "DEBUG_MODE enabled: Google Chat notification suppressed for %s.",
                 case_number,
             )
+        elif ENABLE_GOOGLE_CHAT and activity_is_new:
+            try:
+                send_google_chat(validated_data)
+                logger.info("Google Chat notification sent for %s.", case_number)
+            except Exception as ex:
+                logger.exception(
+                    "Google Chat notification failed for %s.", case_number
+                )
+                _notify_chat_error(
+                    case_number,
+                    "Google Chat notification failed",
+                    str(ex),
+                )
+                return False
+        elif not ENABLE_GOOGLE_CHAT:
+            logger.info(
+                "Google Chat disabled by ENABLE_GOOGLE_CHAT for %s.",
+                case_number,
+            )
+        else:
+            logger.info(
+                "No new activity for %s; Google Chat notification skipped.",
+                case_number,
+            )
 
-        #
-        # Only mark the ticket processed after JSON validation succeeds.
-        # Keep both the Salesforce last_modified value and the actual activity
-        # fingerprint. The latter is what prevents duplicate processing when
-        # Salesforce updates last_modified without changing the latest Chatter
-        # activity.
+        # Only mark the ticket processed after JSON validation and, when
+        # required, successful Google Chat delivery. Keep both last_modified
+        # and activity_id for duplicate detection.
         state[case_number] = {
             "last_modified": ticket["last_modified"],
             "activity_id": activity_id,
@@ -2391,6 +2426,7 @@ async def process_ticket(browser, context, ticket, state):
                 debug_ex,
             )
 
+        _notify_chat_error(case_number, "Ticket processing failed", str(ex))
         return False
 
     finally:

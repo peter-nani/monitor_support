@@ -17,24 +17,28 @@ Updated Salesforce/ScienceLogic support monitor with activity-aware Chatter comm
 
 ## Google Chat behavior
 
-**Google Chat notifications are disabled.**
+Google Chat is enabled for normal runs by default and is controlled by
+`ENABLE_GOOGLE_CHAT`.
 
-The monitor does **not** send Google Chat messages in any mode:
+- `DEBUG_MODE=1`: **never** sends Google Chat messages.
+- `DEBUG_MODE=0` + `ENABLE_GOOGLE_CHAT=1`: sends a message only when the
+  selected Chatter activity is genuinely new.
+- If Salesforce changes `last_modified` but the activity fingerprint is the
+  same, the monitor records the new state but **does not send a duplicate Chat
+  message**.
+- `ENABLE_GOOGLE_CHAT=0`: disables Chat notifications explicitly.
+- Notification failures are logged and the ticket is not marked successfully
+  processed until the notification succeeds.
+- Processing/error notifications are also suppressed in debug mode.
 
-- `DEBUG_MODE=1`: no Chat messages.
-- `FORCE_PROCESS_ALL=1`: no Chat messages.
-- `HEADLESS=0`: no Chat messages.
-- Normal/headless operation: no Chat messages.
-- Processing failures and JSON validation failures: no Chat messages.
-
-All results remain local through logs, JSON files, screenshots, and HTML debug artifacts.
-
-`send_chat.py` is retained only for backward compatibility. Its functions are safe no-ops and never make an HTTP request.
+`send_chat.py` reads `CHAT_WEBHOOK_URL` from the environment first and falls
+back to `config.py`. `SCREENSHOT_BASE_URL` can be overridden when the local
+screenshot server uses a different address.
 
 ## Files
 
 - `main.py` - monitor implementation.
-- `send_chat.py` - disabled compatibility helper; never posts to Google Chat.
+- `send_chat.py` - production Google Chat webhook integration.
 - `requirements.txt` - Python dependencies.
 
 `config.py` is intentionally not included because it contains deployment-specific credentials.
@@ -50,6 +54,9 @@ SCREENSHOT_DIR=/tmp
 DEBUG_DIR=/tmp/monitor_support_debug
 DEBUG_MODE=1
 FORCE_PROCESS_ALL=0
+ENABLE_GOOGLE_CHAT=1
+CHAT_WEBHOOK_URL=<optional override; otherwise read from config.py>
+SCREENSHOT_BASE_URL=http://192.168.1.148:8002/mount_system_temp/
 HEADLESS=1
 PAGE_SETTLE_MS=5000
 TICKET_SETTLE_MS=7000
