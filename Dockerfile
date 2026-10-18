@@ -1,6 +1,6 @@
 FROM python:3.12-bookworm
 
-WORKDIR /root/ocr_extraction/monitor_support
+WORKDIR /home/hr306/monitor_support
 
 COPY requirements.txt .
 
@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY . .
 
 RUN mkdir -p \
-    /root/ocr_extraction/monitor_support/.auth \
-    /root/ocr_extraction/monitor_support/output/json
+    /home/hr306/monitor_support/.auth \
+    /home/hr306/monitor_support/output/json
 
 CMD ["tail", "-f", "/dev/null"]

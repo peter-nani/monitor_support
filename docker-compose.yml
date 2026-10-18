@@ -13,11 +13,9 @@ services:
       - .env
 
     volumes:
-      - ./.auth:/root/ocr_extraction/monitor_support/.auth
-      - ./output:/root/ocr_extraction/monitor_support/output
-      - ./state.json:/root/ocr_extraction/monitor_support/state.json
-      - /tmp:/tmp
-
-    working_dir: /root/ocr_extraction/monitor_support
-
+        - ./.auth:/home/hr306/monitor_support/.auth
+        - ./output:/home/hr306/monitor_support/output
+        - ./state.json:/home/hr306/monitor_support/state.json
+        - /tmp:/tmp
+    working_dir: /home/hr306/monitor_support
     restart: unless-stopped
