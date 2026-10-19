@@ -19,3 +19,12 @@ services:
         - /tmp:/tmp
     working_dir: /home/hr306/monitor_support
     restart: unless-stopped
+
+  screenshot_server:
+    image: nginx:alpine
+    container_name: screenshot_server
+    ports:
+      - "8003:80"
+    volumes:
+      - /tmp:/usr/share/nginx/html/mount_system_temp:ro
+    restart: unless-stopped

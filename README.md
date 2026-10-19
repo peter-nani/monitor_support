@@ -32,8 +32,9 @@ Google Chat is enabled for normal runs by default and is controlled by
 - Processing/error notifications are also suppressed in debug mode.
 
 `send_chat.py` reads `CHAT_WEBHOOK_URL` from the environment first and falls
-back to `config.py`. `SCREENSHOT_BASE_URL` can be overridden when the local
-screenshot server uses a different address.
+back to `config.py`. Set `SCREENSHOT_SERVER_HOST` to the IP address or hostname
+of the Docker host serving screenshots; the URL uses port 8003 and the
+`/mount_system_temp/` path.
 
 ## Files
 
@@ -56,7 +57,7 @@ DEBUG_MODE=1
 FORCE_PROCESS_ALL=0
 ENABLE_GOOGLE_CHAT=1
 CHAT_WEBHOOK_URL=<optional override; otherwise read from config.py>
-SCREENSHOT_BASE_URL=http://192.168.1.148:8002/mount_system_temp/
+SCREENSHOT_SERVER_HOST=192.168.2.245
 HEADLESS=1
 PAGE_SETTLE_MS=5000
 TICKET_SETTLE_MS=7000

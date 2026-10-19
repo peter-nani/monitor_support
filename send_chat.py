@@ -26,9 +26,9 @@ except ImportError:
 
 CHAT_WEBHOOK_URL = os.getenv("CHAT_WEBHOOK_URL") or CONFIG_CHAT_WEBHOOK_URL
 
-SCREENSHOT_BASE_URL = os.getenv(
-    "SCREENSHOT_BASE_URL",
-    "http://192.168.1.148:8002/mount_system_temp/",
+SCREENSHOT_SERVER_HOST = os.getenv("SCREENSHOT_SERVER_HOST", "192.168.2.245")
+SCREENSHOT_BASE_URL = (
+    f"http://{SCREENSHOT_SERVER_HOST}:8003/mount_system_temp/"
 )
 
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("CHAT_REQUEST_TIMEOUT_SECONDS", "30"))
